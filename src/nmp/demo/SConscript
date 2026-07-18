@@ -1,0 +1,7 @@
+Import("*")
+
+SimObject("NMPUnit.py", sim_objects = ["NMPUnit"])
+
+Source("nmp_unit.cc")
+
+DebugFlag("NMPUnit")
