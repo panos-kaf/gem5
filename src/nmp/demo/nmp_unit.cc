@@ -14,7 +14,8 @@ NMPUnit::NMPUnit(const NMPUnitParams &p) :
     cpuPort(p.name + ".cpu_side_port", this),
     memPort(p.name + ".mem_side_port", this),
     nmpRange(p.nmp_range),
-    nmpLatency(p.nmp_latency)
+    nmpLatency(p.nmp_latency),
+    processEvent([this]{ processResponse(); }, p.name)
 {
     std::cout << "NMPUnit constructed!\n";
 }
@@ -76,6 +77,7 @@ NMPUnit::MemSidePort::recvTimingResp(PacketPtr pkt)
 }
 */
 
+/*
 bool
 NMPUnit::MemSidePort::recvTimingResp(PacketPtr pkt)
 {
@@ -106,6 +108,60 @@ NMPUnit::MemSidePort::recvTimingResp(PacketPtr pkt)
     }
 
     return owner->cpuPort.sendTimingResp(pkt);
+}
+*/
+
+
+bool
+NMPUnit::MemSidePort::recvTimingResp(PacketPtr pkt)
+{
+    // Not an NMP packet? Just forward it immediately.
+    if (!owner->nmpRange.contains(pkt->getAddr())) {
+        return owner->cpuPort.sendTimingResp(pkt);
+    }
+
+    // Only intercept reads.
+    if (!pkt->isRead()) {
+        return owner->cpuPort.sendTimingResp(pkt);
+    }
+
+    // Only handle 32-bit accesses.
+    if (pkt->getSize() != sizeof(uint32_t)) {
+        return owner->cpuPort.sendTimingResp(pkt);
+    }
+
+    DPRINTF(NMPUnit, "Received NMP response at tick %llu\n", curTick());
+
+    std::cout << "[NMP] Received response at tick " << curTick() << std::endl;
+
+    // Store the packet for later.
+    owner->pendingPkt = pkt;
+
+    // Schedule processing after the NMP latency.
+    owner->schedule(owner->processEvent,
+                    curTick() + owner->nmpLatency);
+
+    // We accepted the response, but we will forward it later.
+    return true;
+}
+
+void
+NMPUnit::processResponse()
+{
+    PacketPtr pkt = pendingPkt;
+
+    uint32_t data = pkt->getLE<uint32_t>();
+
+    std::cout << "[NMP] Processing response at tick " << curTick() << std::endl;
+
+    if (data == 0xBABEBABE) {
+        data = 0xCAFECAFE;
+        pkt->setLE<uint32_t>(data);
+    }
+
+    cpuPort.sendTimingResp(pkt);
+
+    pendingPkt = nullptr;
 }
 
 /*

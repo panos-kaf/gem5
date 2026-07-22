@@ -4,7 +4,7 @@ from m5.objects.ClockedObject import ClockedObject
 
 class NMPUnit(ClockedObject):
     type = 'NMPUnit'
-    cxx_header = "nmp_unit.hh"
+    cxx_header = "nmp/demo/nmp_unit.hh"
     cxx_class = 'gem5::nmp::NMPUnit'
 
     # the two ports to sit on the wire

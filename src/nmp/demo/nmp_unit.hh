@@ -48,6 +48,13 @@ class NMPUnit : public ClockedObject
     AddrRange nmpRange;
     Cycles nmpLatency;
 
+
+    PacketPtr pendingPkt = nullptr;
+
+    void processResponse();
+
+    EventFunctionWrapper processEvent;
+
   public:
     NMPUnit(const NMPUnitParams &p);
     Port &getPort(const std::string &if_name, PortID idx=InvalidPortID) override;
