@@ -29,13 +29,13 @@ system.system_port = system.membus.cpu_side_ports
 
 # Create and wire the NMP unit
 
-system.nmp = NMPUnit(nmp_latency=5)
+system.nmp = NMPUnit(nmp_latency=1000)
 
 # Target specific address for NMP
 system.nmp.nmp_range = AddrRange(start=0x80000000, size=4096)
 
 # Set up the workload (Our compiled C program)
-binary = 'workloads/nmp/test_nmp'
+binary = '../workloads/nmp/test_nmp'
 if not os.path.exists(binary):
     print(f"Error: Could not find '{binary}'. Please compile test_nmp.c first!")
     exit(1)
