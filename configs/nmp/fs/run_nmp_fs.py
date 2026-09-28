@@ -1,8 +1,3 @@
-"""This script is the full system example script from the ARM
-Research Starter Kit on System Modeling. More information can be found
-at: http://www.arm.com/ResearchEnablement/SystemModeling
-"""
-
 import argparse
 import os
 
@@ -15,7 +10,6 @@ m5.util.addToPath("../..")
 
 import devices
 from common import (
-    MemConfig,
     ObjectList,
     SysPaths,
 )
@@ -29,9 +23,6 @@ default_disk = "linaro-minimal-aarch64.img"
 default_root_device = "/dev/vda1"
 
 
-# Pre-defined CPU configurations. Each tuple must be ordered as : (cpu_class,
-# l1_icache_class, l1_dcache_class, l2_Cache_class). Any of
-# the cache class may be 'None' if the particular cache is not present.
 cpu_types = {
     "atomic": (AtomicSimpleCPU, None, None, None),
     "minor": (MinorCPU, devices.L1I, devices.L1D, devices.L2),
@@ -44,25 +35,18 @@ cpu_types = {
     ),
 }
 
-
 def create_cow_image(name):
-    """Helper function to create a Copy-on-Write disk image"""
     image = CowDiskImage()
     image.child.image_file = SysPaths.disk(name)
-
     return image
 
-
 def create(args):
-    """Create and configure the system object."""
-
     if args.script and not os.path.isfile(args.script):
         print(f"Error: Bootscript {args.script} does not exist")
         sys.exit(1)
 
     cpu_class = cpu_types[args.cpu][0]
     mem_mode = cpu_class.memory_mode()
-    # Only simulate caches when using a timing CPU (e.g., the HPI model)
     want_caches = True if mem_mode == "timing" else False
 
     system = devices.SimpleSystem(
@@ -73,29 +57,18 @@ def create(args):
         readfile=args.script,
     )
 
-    MemConfig.config_mem(args, system)
+    # PREVENT SVE KERNEL PANIC
+    system.release = Armv8()
 
-    # Add the PCI devices we need for this system. The base system
-    # doesn't have any PCI devices by default since they are assumed
-    # to be added by the configuration scripts needing them.
     system.pci_devices = [
-        # Create a VirtIO block device for the system's boot
-        # disk. Attach the disk image using gem5's Copy-on-Write
-        # functionality to avoid writing changes to the stored copy of
-        # the disk image.
         PciVirtIO(vio=VirtIOBlock(image=create_cow_image(args.disk_image)))
     ]
 
-    # Attach the PCI devices to the system. The helper method in the
-    # system assigns a unique PCI bus ID to each of the devices and
-    # connects them to the IO bus.
     for dev in system.pci_devices:
         system.attach_pci(dev)
 
-    # Wire up the system's memory system
     system.connect()
 
-    # Add CPU clusters to the system
     system.cpu_cluster = [
         devices.ArmCpuCluster(
             system,
@@ -108,51 +81,27 @@ def create(args):
         )
     ]
 
-    # Create a cache hierarchy for the cluster. We are assuming that
-    # clusters have core-private L1 caches and an L2 that's shared
-    # within the cluster.
-    #system.addCaches(want_caches, last_cache_level=2)
-
     system.nmp = NMPUnit(nmp_latency=5)
     system.nmp.nmp_range = AddrRange(start=0xA0000000, size=4096)
 
+    # MANUALLY CONFIGURE DRAM AND NMP
+    system.mem_ctrl = MemCtrl()
+    system.mem_ctrl.dram = ObjectList.mem_list.get(args.mem_type)()
+    system.mem_ctrl.dram.range = system.mem_ranges[0]
+
     if want_caches:
-        for cluster in system.cpu_cluster:
-            # Generate the L1 and L2 caches for the cluster
-            cluster.addL1()
-            cluster.addL2(cluster.clk_domain)
-            
-            # Route the L2 cache's outgoing traffic directly into the NMP
-            cluster.l2.mem_side = system.nmp.cpu_side_port
+        system.addCaches(want_caches, last_cache_level=2)
+        system.nmp.mem_side_port = system.mem_ctrl.port
+        system.membus.mem_side_ports = system.nmp.cpu_side_port
     else:
-            # Fallback for --cpu=atomic (cache-less)
-            for cluster in system.cpu_cluster:
-                for cpu in cluster.cpus:
-                    # Route data port through NMP
-                    cpu.dcache_port = system.nmp.cpu_side_port
-                    
-                    # Route instruction port directly to membus
-                    cpu.icache_port = system.membus.cpu_side_ports
-                    
-                    # Safely connect MMU table walkers if they exist
-                    try:
-                        cpu.mmu.itb.walker.port = system.membus.cpu_side_ports
-                        cpu.mmu.dtb.walker.port = system.membus.cpu_side_ports
-                    except AttributeError:
-                        # Atomic CPUs in this gem5 version do not expose walker ports, 
-                        # so we simply ignore them and move on safely.
-                        pass
+        system.nmp.mem_side_port = system.mem_ctrl.port
+        system.membus.mem_side_ports = system.nmp.cpu_side_port
 
-    # Connect the NMP unit to the main system bus
-    system.nmp.mem_side_port = system.membus.cpu_side_ports
-
-    # Setup gem5's minimal Linux boot loader.
     system.realview.setupBootLoader(system, SysPaths.binary)
 
     if args.dtb:
         system.workload.dtb_filename = args.dtb
     else:
-        # No DTB specified: autogenerate DTB
         system.workload.dtb_filename = os.path.join(
             m5.options.outdir, "system.dtb"
         )
@@ -161,20 +110,12 @@ def create(args):
     if args.initrd:
         system.workload.initrd_filename = args.initrd
 
-    # Linux boot command flags
     kernel_cmd = [
-        # Tell Linux to use the simulated serial port as a console
         "console=ttyAMA0",
-        # Hard-code timi
         "lpj=19988480",
-        # Disable address space randomisation to get a consistent
-        # memory layout.
         "norandmaps",
-        # Tell Linux where to find the root disk image.
         f"root={args.root_device}",
-        # Mount the root disk read-write by default.
         "rw",
-        # Tell Linux about the amount of physical memory present.
         f"mem={args.mem_size}",
     ]
     system.workload.command_line = " ".join(kernel_cmd)
@@ -199,15 +140,14 @@ def run(args):
             print("Dropping checkpoint at tick %d" % m5.curTick())
             cpt_dir = os.path.join(m5.options.outdir, "cpt.%d" % m5.curTick())
             m5.checkpoint(os.path.join(cpt_dir))
-            print("Checkpoint done.")
+            print("Checkpoint done. Exiting so you can restore with a detailed CPU!")
+            break # We stop the simulation here!
         else:
             print(f"{exit_msg} ({event.getCode()}) @ {m5.curTick()}")
             break
 
 
 def arm_ppi_arg(int_num: int) -> int:
-    """Argparse argument parser for valid Arm PPI numbers."""
-    # PPIs (1056 <= int_num <= 1119) are not yet supported by gem5
     int_num = int(int_num)
     if 16 <= int_num <= 31:
         return int_num
@@ -216,90 +156,23 @@ def arm_ppi_arg(int_num: int) -> int:
 
 def main():
     parser = argparse.ArgumentParser(epilog=__doc__)
-
-    parser.add_argument(
-        "--dtb", type=str, default=None, help="DTB file to load"
-    )
-    parser.add_argument(
-        "--kernel", type=str, default=default_kernel, help="Linux kernel"
-    )
-    parser.add_argument(
-        "--initrd",
-        type=str,
-        default=None,
-        help="initrd/initramfs file to load",
-    )
-    parser.add_argument(
-        "--disk-image",
-        type=str,
-        default=default_disk,
-        help="Disk to instantiate",
-    )
-    parser.add_argument(
-        "--root-device",
-        type=str,
-        default=default_root_device,
-        help=f"OS device name for root partition (default: {default_root_device})",
-    )
-    parser.add_argument(
-        "--script", type=str, default="", help="Linux bootscript"
-    )
-    parser.add_argument(
-        "--cpu",
-        type=str,
-        choices=list(cpu_types.keys()),
-        default="atomic",
-        help="CPU model to use",
-    )
+    parser.add_argument("--dtb", type=str, default=None, help="DTB file to load")
+    parser.add_argument("--kernel", type=str, default=default_kernel, help="Linux kernel")
+    parser.add_argument("--initrd", type=str, default=None, help="initrd/initramfs file to load")
+    parser.add_argument("--disk-image", type=str, default=default_disk, help="Disk to instantiate")
+    parser.add_argument("--root-device", type=str, default=default_root_device, help=f"OS device name for root partition")
+    parser.add_argument("--script", type=str, default="", help="Linux bootscript")
+    parser.add_argument("--cpu", type=str, choices=list(cpu_types.keys()), default="atomic", help="CPU model to use")
     parser.add_argument("--cpu-freq", type=str, default="4GHz")
-    parser.add_argument(
-        "--num-cores", type=int, default=1, help="Number of CPU cores"
-    )
-    parser.add_argument(
-        "--mem-type",
-        default="DDR3_1600_8x8",
-        choices=ObjectList.mem_list.get_names(),
-        help="type of memory to use",
-    )
-    parser.add_argument(
-        "--mem-channels", type=int, default=1, help="number of memory channels"
-    )
-    parser.add_argument(
-        "--mem-ranks",
-        type=int,
-        default=None,
-        help="number of memory ranks per channel",
-    )
-    parser.add_argument(
-        "--mem-size",
-        action="store",
-        type=str,
-        default="2GiB",
-        help="Specify the physical memory size",
-    )
-    parser.add_argument(
-        "--tarmac-gen",
-        action="store_true",
-        help="Write a Tarmac trace.",
-    )
-    parser.add_argument(
-        "--tarmac-dest",
-        choices=TarmacDump.vals,
-        default="stdoutput",
-        help="Destination for the Tarmac trace output. [Default: stdoutput]",
-    )
-    parser.add_argument(
-        "--with-pmu",
-        action="store_true",
-        help="Add a PMU to each core in the cluster.",
-    )
-    parser.add_argument(
-        "--pmu-ppi-number",
-        type=arm_ppi_arg,
-        default=23,
-        help="The number of the PPI to use to connect each PMU to its core. "
-        "Must be an integer and a valid PPI number (16 <= int_num <= 31).",
-    )
+    parser.add_argument("--num-cores", type=int, default=1, help="Number of CPU cores")
+    parser.add_argument("--mem-type", default="DDR3_1600_8x8", choices=ObjectList.mem_list.get_names(), help="type of memory to use")
+    parser.add_argument("--mem-channels", type=int, default=1, help="number of memory channels")
+    parser.add_argument("--mem-ranks", type=int, default=None, help="number of memory ranks per channel")
+    parser.add_argument("--mem-size", action="store", type=str, default="2GiB", help="Specify the physical memory size")
+    parser.add_argument("--tarmac-gen", action="store_true", help="Write a Tarmac trace.")
+    parser.add_argument("--tarmac-dest", choices=TarmacDump.vals, default="stdoutput", help="Destination for the Tarmac trace output.")
+    parser.add_argument("--with-pmu", action="store_true", help="Add a PMU to each core in the cluster.")
+    parser.add_argument("--pmu-ppi-number", type=arm_ppi_arg, default=23, help="PPI Number")
     parser.add_argument("--checkpoint", action="store_true")
     parser.add_argument("--restore", type=str, default=None)
 
