@@ -20,13 +20,16 @@ class NMPUnit : public ClockedObject
     {
       private:
         NMPUnit *owner;
+
+      protected:
+        bool recvTimingReq(PacketPtr pkt) override;
+        void recvRespRetry() override;
+        AddrRangeList getAddrRanges() const override;
+
       public:
         CPUSidePort(const std::string& name, NMPUnit *owner) : ResponsePort(name), owner(owner) {}
         Tick recvAtomic(PacketPtr pkt) override { return owner->memPort.sendAtomic(pkt); }
-	AddrRangeList getAddrRanges() const override;
         void recvFunctional(PacketPtr pkt) override { owner->memPort.sendFunctional(pkt); }
-        bool recvTimingReq(PacketPtr pkt) override;
-        void recvRespRetry() override { owner->memPort.sendRetryResp(); }
     };
 
     // The port facing the Memory
@@ -34,11 +37,14 @@ class NMPUnit : public ClockedObject
     {
       private:
         NMPUnit *owner;
+
+      protected:
+        bool recvTimingResp(PacketPtr pkt) override;
+        void recvReqRetry() override;
+        void recvRangeChange() override;
+
       public:
         MemSidePort(const std::string& name, NMPUnit *owner) : RequestPort(name), owner(owner) {}
-        bool recvTimingResp(PacketPtr pkt) override;
-        void recvReqRetry() override { owner->cpuPort.sendRetryReq(); }
-	void recvRangeChange() override { owner->cpuPort.sendRangeChange(); }
     };
 
     CPUSidePort cpuPort;
